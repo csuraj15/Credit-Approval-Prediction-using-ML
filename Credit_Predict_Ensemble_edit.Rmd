@@ -1,0 +1,191 @@
+---
+title: "Credit_Ensemble"
+author: "Suraj Chatakondu"
+date: "2023-12-17"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Loading libraries and data: Created the training and testing data sets as well as changed the binary values from 1,2 to 0,1 to make it easier to comprehend.
+
+```{r, echo=TRUE,include=TRUE}
+setwd("~/Documents/Mac Projects")
+remove(list = ls())
+graphics.off()
+options(digits = 3, scipen = 999999)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(SuperLearner)
+  library(magrittr)
+  library(psych)
+})
+
+credit = read.csv("german-credit-scoring-1.csv", header = TRUE, 
+                  stringsAsFactors = TRUE,
+                  sep = ";"
+)
+
+#Changing the binary from 1,2 to 0,1
+credit$Score = as.numeric(as.factor(credit$Score))
+credit$Score = credit$Score - 1
+table(credit$Score)
+
+#Splitting training and testing sets
+credit$id = 1:nrow(credit)
+train = credit %>% sample_frac(0.7)
+test = credit %>% anti_join(train, by = "id")
+train %<>% dplyr::select(-id)
+test %<>% dplyr::select(-id)
+credit %<>% dplyr::select(-id)
+```
+
+## Fitting models and creating Ensembles
+
+```{r, echo=TRUE, include=FALSE}
+set.seed(12345)
+
+SL.library <- c("SL.glm", 
+                "SL.randomForest", 
+                "SL.rpart"
+                )
+
+ensemble.model <- SuperLearner(
+  Y = train$Score, 
+  X = train[,c(1:20)],
+  verbose = TRUE,
+  SL.library = SL.library,
+  method = "method.NNLS2"
+)
+```
+
+```{r, echo=TRUE, include=TRUE}
+ensemble.model
+
+predictions <- predict.SuperLearner(ensemble.model, newdata=test[,c(1:20)])
+ensemble_pred = ifelse(predictions$pred>=median(predictions$pred),1,0) # at medians
+
+#predictions$library.predict - individual algorithm values, 
+#predictions$pred - ensemble values
+glm_pred = predictions$library.predict[,1]
+glm_pred = ifelse(glm_pred>=median(glm_pred),1,0)
+
+rf_pred = predictions$library.predict[,2]
+rf_pred = ifelse(rf_pred>=median(rf_pred),1,0)
+
+rpart_pred = predictions$library.predict[,3]
+rpart_pred = ifelse(rpart_pred>=median(rpart_pred),1,0)
+```
+
+## Custom Ensemble creation and Evaluation: Two different methods namely summation and averaging while two more techniques in using either mean or median from the average, which makes it three own ensembles.
+
+```{r, echo=TRUE, include=TRUE}
+algo_sum = glm_pred + rf_pred + rpart_pred
+avg_pred <- (glm_pred + rf_pred + rpart_pred) / 3
+
+median_avg <- median(avg_pred)
+mean_avg <- mean(avg_pred)
+
+algo_cat = ifelse(algo_sum >= 2, 1, 0)
+algo_cat_avg1 <- ifelse(avg_pred >= median_avg, 1, 0)
+algo_cat_avg2 <- ifelse(avg_pred >= mean_avg, 1, 0)
+
+own_ensemble = mean(algo_cat == test$Score) 
+own_ensemble1 = mean(algo_cat_avg1 == test$Score)
+own_ensemble2 = mean(algo_cat_avg2 == test$Score)
+
+```
+
+# Confusion matrices
+## Superlearner Ensemble
+```{r, echo=FALSE, include=TRUE}
+cm_ensemble <- caret::confusionMatrix(as.factor(ensemble_pred), 
+                                      as.factor(test$Score))
+cm_ensemble
+```
+## Logistc regression model (GLM)
+```{r, echo=FALSE, include=TRUE}
+cm_glm <- caret::confusionMatrix(as.factor(glm_pred), 
+                                 as.factor(test$Score))
+cm_glm
+```
+## Random forests model
+```{r, echo=FALSE, include=TRUE}
+cm_rf <- caret::confusionMatrix(as.factor(rf_pred), 
+                                as.factor(test$Score))
+cm_rf
+```
+## Recursive partitions model
+```{r, echo=FALSE, include=TRUE}
+cm_rpart <- caret::confusionMatrix(as.factor(rpart_pred), 
+                                as.factor(test$Score))
+cm_rpart
+```
+## Custom ensemble with Summation of individual model scores
+```{r, echo=FALSE, include=TRUE}
+cm_own_ensemble <- caret::confusionMatrix(as.factor(algo_cat), 
+                                          as.factor(test$Score))
+cm_own_ensemble
+```
+## Custom ensemble with Averaging the score and using Median for classification
+```{r, echo=FALSE, include=TRUE}
+cm_own_ensemble1 <- caret::confusionMatrix(as.factor(algo_cat_avg1), 
+                                              as.factor(test$Score))
+cm_own_ensemble1
+```
+## Custom ensemble with Averaging the score and using Mean for classification
+```{r, echo=FALSE, include=TRUE}
+cm_own_ensemble2 <- caret::confusionMatrix(as.factor(algo_cat_avg2), 
+                                              as.factor(test$Score))
+cm_own_ensemble2
+```
+
+## GGPlot with all individual algorithm values along with superlearner and own ensembles:
+```{r, echo=TRUE,include = TRUE}
+mydata = data.frame(Ensemble = mean(ensemble_pred == test$Score),
+           GLM = mean(glm_pred == test$Score),
+           RF = mean(rf_pred == test$Score),
+           RPart = mean(rpart_pred == test$Score),
+           own_ensemble = mean(algo_cat == test$Score),
+           own_ensemble1 = mean(algo_cat_avg1 == test$Score),
+           own_ensemble2 = mean(algo_cat_avg2 == test$Score)
+           )
+#Data frame including all the accuracy values from various algorithms
+mydata
+
+mydata %>% pivot_longer(cols = everything(), 
+                        names_to = "Algo", values_to = "Value")  %>%
+  ggplot(aes(x = Algo, y = Value, fill = Algo)) + 
+  geom_col(show.legend = FALSE) + 
+  ylim(0,0.9)+
+  geom_text(aes(label = round(Value,3)), 
+            vjust = 1.5, 
+            hjust = -0.75,
+            colour = "darkred") +
+  coord_flip()
+
+```
+
+# Summary and Conclusion:
+## We have evaluated performance of three ML algorithms such as RF, GLM, RPart and used SuperLearner ensemble, at the same time creating three own ensembles and compared against them. Rpart seems to be providing better results than other algorithms individually, whearas among ensembles superlearner is performing better.
+
+```{r,echo=FALSE, include=FALSE}
+# For glm_pred
+skew_glm <- skew(glm_pred)
+sprintf("%s %.2f", "The skewness of skew_glm is:", skew_glm)
+# For rf_pred
+skew_rf <- skew(rf_pred)
+sprintf("%s %.2f", "The skewness of skew_rf is:", skew_rf)
+# For rpart_pred
+skew_rpart <- skew(rpart_pred)
+sprintf("%s %.2f", "The skewness of skew_rpart is:", skew_rpart)
+# For avg_pred
+skew_avg <- skew(avg_pred)
+sprintf("%s %.2f", "The skewness of skew_avg is:", skew_avg)
+```
+
